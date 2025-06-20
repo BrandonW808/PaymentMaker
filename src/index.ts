@@ -8,9 +8,14 @@ import bcrypt from 'bcrypt';
 import { connect } from 'mongoose';
 import * as dotenv from 'dotenv';
 import { authenticateToken } from './middleware/authentication';
+import stripeRoutes from './routes/stripeRoutes'; // Import the Stripe routes
+import Stripe from 'stripe';
 
 // Load environment variables from .env file
 dotenv.config();
+
+// Initialize Stripe
+const stripe = new Stripe(process.env.STRIPE_KEY || "");
 
 connect(process.env.MONGODB_URI!).then(() => {
     console.log(`MongoDB connected`);
@@ -44,28 +49,63 @@ const fetchLimiter = rateLimit({
     message: 'Too many fetch requests from this IP, please try again after an hour'
 });
 
+// Use Stripe routes
+app.use('/api/stripe', authenticateToken, stripeRoutes);
+
 app.post('/api/create-customer', async (req: Request, res: Response) => {
     try {
-        // Create Customer in MongoDB with Stripe customer ID and subscription ID
+        // Create a Stripe customer first
+        const stripeCustomer = await stripe.customers.create({
+            email: req.body.email,
+            name: req.body.name,
+            phone: req.body.phone,
+            address: {
+                line1: req.body.address,
+                city: req.body.city || '',
+                state: req.body.state || '',
+                postal_code: req.body.postalCode || '',
+                country: req.body.country || 'US',
+            },
+            metadata: {
+                source: 'web_app'
+            }
+        });
+
+        // Create Customer in MongoDB with Stripe customer ID
         const customer = new Customer({
             name: req.body.name,
             email: req.body.email,
             address: req.body.address,
             phone: req.body.phone,
             password: req.body.password,
+            stripeCustomerId: stripeCustomer.id, // Store the Stripe customer ID
         });
 
         await customer.save();
 
         res.status(201).json({
-            customer,
+            customer: {
+                id: customer._id,
+                name: customer.name,
+                email: customer.email,
+                address: customer.address,
+                phone: customer.phone,
+                stripeCustomerId: stripeCustomer.id
+            },
         });
 
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ message: 'Server error', error: err.message });
+        
+        // Clean up Stripe customer if MongoDB save fails
+        if (err.message && err.message.includes('duplicate')) {
+            res.status(400).json({ message: 'Customer with this email already exists' });
+        } else {
+            res.status(500).json({ message: 'Server error', error: err.message });
+        }
     }
-})
+});
+
 // Route to handle sign in for authentication
 app.post('/api/sign-in', async (req: Request, res: Response) => {
     try {
@@ -84,7 +124,15 @@ app.post('/api/sign-in', async (req: Request, res: Response) => {
         }
 
         const token = customer.generateAuthToken();
-        res.json({ token });
+        res.json({ 
+            token,
+            customer: {
+                id: customer._id,
+                name: customer.name,
+                email: customer.email,
+                stripeCustomerId: customer.stripeCustomerId
+            }
+        });
     } catch (error) {
         console.error('Error handling sign in:', error);
         res.status(500).send('Error handling sign in.');
@@ -170,6 +218,11 @@ app.get('/api/profile-picture/:customerId', authenticateToken, fetchLimiter, asy
         console.error('Error fetching profile picture:', error);
         res.status(500).send('Error fetching profile picture.');
     }
+});
+
+// Health check endpoint
+app.get('/health', (req: Request, res: Response) => {
+    res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
 // Start the server

@@ -13,6 +13,7 @@ export interface ICustomer extends Document {
     address: string;
     phone: string;
     password: string;
+    stripeCustomerId?: string; // Added Stripe customer ID
     profilePictureUrl?: string;
     generateAuthToken(): string;
 }
@@ -23,11 +24,15 @@ const CustomerSchema: Schema = new Schema({
     address: { type: String, required: true },
     phone: { type: String, required: true },
     password: { type: String },
+    stripeCustomerId: { type: String, unique: true, sparse: true }, // Stripe customer ID
     profilePictureUrl: { type: String }
+}, {
+    timestamps: true // Adds createdAt and updatedAt timestamps
 });
 
 CustomerSchema.index({ email: 1 }, { unique: true });
 CustomerSchema.index({ name: 'text', email: 'text' });
+CustomerSchema.index({ stripeCustomerId: 1 });
 
 CustomerSchema.pre<ICustomer>('save', async function (next) {
     if (!this.isModified('password')) return next();
